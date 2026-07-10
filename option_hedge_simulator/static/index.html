@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📊 期权对冲训练系统</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <!-- ECharts CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+</head>
+<body>
+    <!-- ======== 设置页面 ======== -->
+    <div id="setup-screen" class="screen active">
+        <div class="setup-container">
+            <h1>📊 期权对冲交易员训练系统</h1>
+            <p class="subtitle">你是做市商，客户会来找你买期权。你的目标是：<br>
+            <strong>收取权利金，通过对冲把期权费赚出来。</strong></p>
+
+            <div class="setup-grid">
+                <div class="setup-card">
+                    <label>标的选择</label>
+                    <select id="cfg-underlying">
+                        <option value="50ETF">50ETF (上证50) — 默认 S₀≈3.200</option>
+                        <option value="300ETF">300ETF (沪深300) — 默认 S₀≈4.000</option>
+                    </select>
+                </div>
+
+                <div class="setup-card">
+                    <label>数据模式</label>
+                    <select id="cfg-mode">
+                        <option value="simulate">纯模拟（Heston 随机波动率）</option>
+                        <option value="replay">真实历史数据回放</option>
+                    </select>
+                </div>
+
+                <div class="setup-card">
+                    <label>难度</label>
+                    <select id="cfg-difficulty">
+                        <option value="easy">⭐ 简单 — 低波动率，少跳跃</option>
+                        <option value="medium" selected>⭐⭐ 中等 — 真实感</option>
+                        <option value="hard">⭐⭐⭐ 困难 — 高波动，频繁冲击</option>
+                    </select>
+                </div>
+
+                <div class="setup-card">
+                    <label>交易天数</label>
+                    <input type="number" id="cfg-days" value="60" min="10" max="252">
+                </div>
+
+                <div class="setup-card">
+                    <label>初始资金 (¥)</label>
+                    <input type="number" id="cfg-cash" value="100000" min="10000" step="10000">
+                </div>
+
+                <div class="setup-card">
+                    <label>游戏速度</label>
+                    <select id="cfg-speed">
+                        <option value="0.5">0.5x 慢速（学习用）</option>
+                        <option value="1" selected>1x 正常</option>
+                        <option value="2">2x 快速</option>
+                        <option value="5">5x 极速</option>
+                    </select>
+                </div>
+            </div>
+
+            <button id="btn-start" class="btn-primary btn-large">🚀 开始交易</button>
+
+            <div class="rules-box">
+                <h3>💡 玩法说明</h3>
+                <ul>
+                    <li>🟢 系统会随机派客户来找你买期权，你作为卖方<strong>收取权利金</strong></li>
+                    <li>📈 市场实时跳动（标的价格、隐含波动率），你的持仓价值在变化</li>
+                    <li>🔄 你需要<strong>买卖标的</strong>来做 Delta 对冲，让组合风险可控</li>
+                    <li>💰 到期结算时，如果你的对冲做得好，权利金就是你的利润</li>
+                    <li>📊 系统会对比你的操作和理论最优，给出评分和建议</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- ======== 交易主界面 ======== -->
+    <div id="trading-screen" class="screen">
+        <!-- 顶栏 -->
+        <header class="topbar">
+            <div class="topbar-left">
+                <span class="logo">📊 期权对冲训练</span>
+                <span id="hdr-underlying" class="badge">50ETF</span>
+                <span id="hdr-difficulty" class="badge badge-diff">⭐⭐</span>
+            </div>
+            <div class="topbar-center">
+                <span id="hdr-price" class="price-big">3.2000</span>
+                <span id="hdr-change" class="change up">+0.00%</span>
+                <span class="separator">|</span>
+                <span>IV:</span>
+                <span id="hdr-iv" class="iv-value">18.0%</span>
+            </div>
+            <div class="topbar-right">
+                <div class="day-counter">
+                    <span id="hdr-day" class="day-number">Day 0/60</span>
+                    <div class="day-progress-bar">
+                        <div id="day-progress-fill" class="day-progress-fill" style="width: 0%"></div>
+                    </div>
+                    <span id="hdr-day-pct" class="day-pct">0%</span>
+                </div>
+                <button id="btn-pause" class="btn-sm">⏸ 暂停</button>
+                <button id="btn-resume" class="btn-sm hidden">▶ 继续</button>
+                <button id="btn-stop" class="btn-sm btn-danger">⏹ 结束</button>
+            </div>
+        </header>
+
+        <!-- 主体网格 -->
+        <div class="main-grid">
+            <!-- 左侧：持仓 + 操作 -->
+            <aside class="panel-left">
+                <div class="panel-section">
+                    <h3>📋 持仓概览</h3>
+                    <div id="positions-panel">
+                        <div class="empty-hint">暂无持仓</div>
+                    </div>
+                </div>
+
+                <div class="panel-section">
+                    <h3>💰 资金</h3>
+                    <div class="stat-row">
+                        <span>现金</span>
+                        <span id="stat-cash" class="value">¥100,000</span>
+                    </div>
+                    <div class="stat-row highlight-row">
+                        <span>📥 累计权利金</span>
+                        <span id="stat-premium" class="value" style="color:var(--green)">¥0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span>标的持仓</span>
+                        <span id="stat-stock" class="value">0 股</span>
+                    </div>
+                    <div class="stat-row">
+                        <span>标的均价</span>
+                        <span id="stat-avg-cost" class="value">-</span>
+                    </div>
+                </div>
+
+                <div class="panel-section action-panel">
+                    <h3>🎯 操作</h3>
+
+                    <div class="action-group">
+                        <label>标的交易</label>
+                        <div class="input-row">
+                            <input type="number" id="input-stock-qty" placeholder="数量" value="10000" min="100">
+                            <div class="btn-group">
+                                <button id="btn-buy-stock" class="btn-buy">📈 买入</button>
+                                <button id="btn-sell-stock" class="btn-sell">📉 卖出</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button id="btn-delta-hedge" class="btn-primary btn-block">🔄 一键 Delta 对冲</button>
+
+                    <div class="action-group">
+                        <label>平仓期权</label>
+                        <select id="select-close-option">
+                            <option value="">选择要平仓的期权</option>
+                        </select>
+                        <button id="btn-close-option" class="btn-sell btn-block">平仓</button>
+                    </div>
+
+                    <button id="btn-hint" class="btn-hint btn-block">💡 提示（最佳策略）</button>
+                </div>
+            </aside>
+
+            <!-- 中央：图表 -->
+            <main class="panel-center">
+                <!-- 客户订单弹窗 -->
+                <div id="order-popup" class="order-popup hidden">
+                    <div class="popup-header">
+                        <span class="popup-icon">🟢</span>
+                        <span>新客户来了！</span>
+                    </div>
+                    <div id="order-details" class="popup-body"></div>
+                    <div class="popup-actions">
+                        <button id="btn-accept-order" class="btn-buy">✅ 接受订单</button>
+                        <button id="btn-reject-order" class="btn-sell">❌ 拒绝</button>
+                    </div>
+                </div>
+
+                <div id="chart-price" class="chart-container" style="height: 300px;"></div>
+                <div id="chart-pnl" class="chart-container" style="height: 200px;"></div>
+            </main>
+
+            <!-- 右侧：Greeks + 分析 -->
+            <aside class="panel-right">
+                <div class="panel-section">
+                    <h3>📊 Greeks 暴露</h3>
+                    <div class="greeks-grid">
+                        <div class="greek-card">
+                            <div class="greek-label">Δ Delta</div>
+                            <div id="greek-delta" class="greek-value">0</div>
+                            <div id="greek-delta-sub" class="greek-sub"></div>
+                        </div>
+                        <div class="greek-card">
+                            <div class="greek-label">Γ Gamma</div>
+                            <div id="greek-gamma" class="greek-value">0</div>
+                        </div>
+                        <div class="greek-card">
+                            <div class="greek-label">ν Vega</div>
+                            <div id="greek-vega" class="greek-value">0</div>
+                        </div>
+                        <div class="greek-card">
+                            <div class="greek-label">Θ Theta/日</div>
+                            <div id="greek-theta" class="greek-value">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel-section">
+                    <h3>💰 实时损益</h3>
+                    <div id="pnl-display" class="pnl-big">
+                        <span id="pnl-total" class="pnl-value zero">¥0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span>期权 P&L</span>
+                        <span id="pnl-option" class="value zero">¥0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span>标的 P&L</span>
+                        <span id="pnl-stock" class="value zero">¥0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span>最大回撤</span>
+                        <span id="pnl-drawdown" class="value">¥0</span>
+                    </div>
+                </div>
+
+                <div class="panel-section">
+                    <h3>📐 风险分析</h3>
+                    <div class="stat-row">
+                        <span>Delta 偏离</span>
+                        <span id="risk-delta-dev" class="value">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span>风险等级</span>
+                        <span id="risk-level" class="badge">低</span>
+                    </div>
+                    <div class="stat-row">
+                        <span>期权头寸数</span>
+                        <span id="risk-n-options" class="value">0</span>
+                    </div>
+                </div>
+            </aside>
+        </div>
+
+        <!-- 底部：事件日志 -->
+        <div class="event-log-panel">
+            <h3>📝 事件日志</h3>
+            <div id="event-log" class="event-log"></div>
+        </div>
+
+        <!-- 💡 提示弹窗 -->
+        <div id="hint-popup" class="hint-popup hidden">
+            <div class="hint-overlay" onclick="document.getElementById('hint-popup').classList.add('hidden')"></div>
+            <div class="hint-content">
+                <div class="hint-header">
+                    <span class="hint-icon">💡</span>
+                    <span class="hint-title">策略提示</span>
+                    <span id="hint-risk-badge" class="hint-risk-badge risk-low">低风险</span>
+                    <button class="hint-close" onclick="document.getElementById('hint-popup').classList.add('hidden')">✕</button>
+                </div>
+                <div class="hint-body">
+                    <div class="hint-section">
+                        <div class="hint-section-title">📌 当前建议</div>
+                        <div id="hint-suggestion" class="hint-text"></div>
+                    </div>
+                    <div class="hint-section">
+                        <div class="hint-section-title">📖 为什么？</div>
+                        <div id="hint-reason" class="hint-text hint-reason"></div>
+                    </div>
+                    <div class="hint-section">
+                        <div class="hint-section-title">🎯 你可以这样做</div>
+                        <ul id="hint-actions" class="hint-actions"></ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ======== 结算页面 ======== -->
+    <div id="result-screen" class="screen">
+        <div class="result-container">
+            <h1 id="result-title">📊 交易结算</h1>
+
+            <div class="result-grade" id="result-grade">A</div>
+
+            <div class="result-score" id="result-score">85.0 分</div>
+
+            <div class="result-pnl" id="result-pnl">
+                <span>最终损益:</span>
+                <span id="result-pnl-value" class="profit">+¥12,500</span>
+            </div>
+
+            <div class="result-comment" id="result-comment">
+                优秀！你的对冲策略很稳健。
+            </div>
+
+            <div class="result-breakdown" id="result-breakdown">
+                <h3>评分明细</h3>
+                <div class="breakdown-grid"></div>
+            </div>
+
+            <div class="result-suggestions" id="result-suggestions">
+                <h3>📝 改进建议</h3>
+                <ul></ul>
+            </div>
+
+            <div class="result-stats" id="result-stats">
+                <h3>📊 交易统计</h3>
+                <div class="stats-grid"></div>
+            </div>
+
+            <button id="btn-restart" class="btn-primary btn-large">🔄 再来一局</button>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
